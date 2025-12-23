@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>팀 편성 프로그램</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="min-h-screen bg-gray-100">
+        <header class="bg-white shadow-md">
+            <div class="max-w-7xl mx-auto px-4 py-6">
+                <h1 class="text-3xl font-bold text-gray-800">체육 팀 편성 프로그램</h1>
+            </div>
+        </header>
+
+        <main class="max-w-7xl mx-auto px-4 py-8">
+            <!-- 파일 업로드 화면 -->
+            <div id="upload-view" class="space-y-6">
+                <div class="text-center">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">
+                        엑셀 파일을 업로드하세요
+                    </h2>
+                    <div id="file-upload-container" class="w-full max-w-2xl mx-auto">
+                        <div id="drop-zone" class="border-2 border-dashed border-gray-300 bg-gray-50 rounded-lg p-8 text-center transition-colors">
+                            <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
+                            <label for="file-input" class="cursor-pointer flex flex-col items-center">
+                                <svg class="w-12 h-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p class="text-lg font-medium text-gray-700 mb-2">
+                                    엑셀 파일을 드래그하거나 클릭하여 업로드
+                                </p>
+                                <p class="text-sm text-gray-500">
+                                    .xlsx 또는 .xls 파일만 지원됩니다
+                                </p>
+                            </label>
+                        </div>
+                        
+                        <div id="error-message" class="mt-4 hidden p-4 bg-red-50 border border-red-200 rounded-lg text-red-700"></div>
+                        
+                        <div class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            <p class="text-sm text-blue-800 font-medium mb-2">엑셀 파일 형식 안내:</p>
+                            <ul class="text-sm text-blue-700 list-disc list-inside space-y-1">
+                                <li>첫 번째 줄(행)에 항목 이름을 적어주세요 (예: 이름, 기록1, 기록2 등)</li>
+                                <li>이름 열에는 "이름"이라는 단어가 포함되어야 합니다</li>
+                                <li>숫자 기록은 이름 열을 제외한 다른 열에 입력하세요</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 메인 화면 (파일 업로드 후) -->
+            <div id="main-view" class="space-y-6 hidden">
+                <div class="bg-white p-4 rounded-lg shadow-md">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <p class="text-sm text-gray-600">
+                                업로드된 학생 수: <strong id="student-count">0명</strong>
+                            </p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button id="teacher-btn" class="px-4 py-2 rounded-lg font-medium transition-colors bg-blue-600 text-white">
+                                교사용
+                            </button>
+                            <button id="student-btn" class="px-4 py-2 rounded-lg font-medium transition-colors bg-gray-200 text-gray-700 hover:bg-gray-300">
+                                학생용
+                            </button>
+                            <button id="reset-btn" class="px-4 py-2 rounded-lg font-medium bg-red-600 text-white hover:bg-red-700 transition-colors">
+                                새로 시작
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 교사용 뷰 -->
+                <div id="teacher-view" class="hidden"></div>
+
+                <!-- 학생용 뷰 -->
+                <div id="student-view" class="hidden"></div>
+            </div>
+        </main>
+
+        <footer class="bg-white border-t mt-12">
+            <div class="max-w-7xl mx-auto px-4 py-6 text-center text-gray-600 text-sm">
+                MADE BY 훈장님
+            </div>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
