@@ -478,7 +478,7 @@ function initializeAnonymizedStudents() {
     };
   });
   
-  teams = [];
+  // teams는 renderStudentView에서 초기화하지 않음 (팀 편성 중에는 유지)
   showFinalTeams = false;
 }
 
@@ -486,7 +486,10 @@ function renderStudentView() {
   document.getElementById('teacher-view').classList.add('hidden');
   document.getElementById('student-view').classList.remove('hidden');
   
-  initializeAnonymizedStudents();
+  // anonymizedStudents가 비어있을 때만 초기화 (팀 편성 중에는 초기화하지 않음)
+  if (anonymizedStudents.length === 0) {
+    initializeAnonymizedStudents();
+  }
   
   const container = document.getElementById('student-view');
   const getUnassignedStudents = () => {
@@ -522,25 +525,48 @@ function renderStudentView() {
     </div>
   `;
   
-  document.getElementById('student-num-teams').addEventListener('input', (e) => {
-    numTeams = Number(e.target.value);
-  });
-  
-  document.getElementById('init-teams-btn').addEventListener('click', () => {
-    if (numTeams < 1 || numTeams > students.length) {
-      alert('팀 수는 1 이상이고 학생 수 이하여야 합니다.');
-      return;
-    }
-    teams = initializeManualTeams(anonymizedStudents, numTeams);
-    renderStudentView();
-  });
-  
-  if (teams.length > 0) {
-    document.getElementById('reset-student-teams-btn').addEventListener('click', () => {
+  // 이벤트 위임을 사용하여 student-view 컨테이너에 이벤트 리스너 추가
+  container.onclick = (e) => {
+    if (e.target.id === 'init-teams-btn') {
+      e.preventDefault();
+      const numTeamsInput = document.getElementById('student-num-teams');
+      if (numTeamsInput) {
+        numTeams = Number(numTeamsInput.value);
+      }
+      if (numTeams < 1 || numTeams > students.length) {
+        alert('팀 수는 1 이상이고 학생 수 이하여야 합니다.');
+        return;
+      }
+      if (anonymizedStudents.length === 0) {
+        alert('학생 데이터가 없습니다. 파일을 다시 업로드해주세요.');
+        return;
+      }
+      teams = initializeManualTeams(anonymizedStudents, numTeams);
+      renderStudentView();
+    } else if (e.target.id === 'reset-student-teams-btn') {
+      e.preventDefault();
       teams = [];
       renderStudentView();
-    });
+    }
+  };
+  
+  container.oninput = (e) => {
+    if (e.target.id === 'student-num-teams') {
+      numTeams = Number(e.target.value);
+    }
+  };
+  
+  if (teams.length > 0) {
     attachStudentEventListeners(unassigned);
+    
+    // 팀 편성 확인하기 버튼 이벤트
+    const showFinalBtn = document.getElementById('show-final-teams-btn');
+    if (showFinalBtn) {
+      showFinalBtn.onclick = () => {
+        showFinalTeams = !showFinalTeams;
+        renderStudentView();
+      };
+    }
   }
 }
 
@@ -728,11 +754,6 @@ function attachStudentEventListeners(unassigned) {
       renderStudentView();
     });
   });
-  
-  document.getElementById('show-final-teams-btn').addEventListener('click', () => {
-    showFinalTeams = !showFinalTeams;
-    renderStudentView();
-  });
 }
 
 // 초기화
@@ -783,6 +804,11 @@ document.addEventListener('DOMContentLoaded', () => {
   
   studentBtn.addEventListener('click', () => {
     viewMode = 'student';
+    // 학생용 뷰로 전환할 때 anonymizedStudents 초기화
+    anonymizedStudents = [];
+    teams = [];
+    selectedStudentIndex = null;
+    showFinalTeams = false;
     updateViewButtons();
     renderMainView();
   });
