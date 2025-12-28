@@ -30,17 +30,18 @@ function parseExcelFile(file) {
         
         const headers = jsonData[0];
         const nameColumnIndex = headers.findIndex(h => 
-          h && (h.includes('이름') || h.includes('name') || h.includes('Name'))
+          h && (h.includes('이름') || h.includes('성명') || h.includes('name') || h.includes('Name'))
         );
         
         if (nameColumnIndex === -1) {
-          reject(new Error('이름 열을 찾을 수 없습니다. 헤더에 "이름"이 포함되어야 합니다.'));
+          reject(new Error('이름 열을 찾을 수 없습니다. 헤더에 "이름" 또는 "성명"이 포함되어야 합니다.'));
           return;
         }
         
         const recordColumnIndices = [];
         headers.forEach((header, index) => {
-          if (index !== nameColumnIndex && header) {
+          // 이름 열 이후의 열만 기록으로 인식
+          if (index > nameColumnIndex && header) {
             const firstDataRow = jsonData[1];
             if (firstDataRow && firstDataRow[index] !== undefined) {
               const value = firstDataRow[index];
