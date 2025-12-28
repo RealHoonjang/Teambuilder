@@ -245,6 +245,143 @@ function removeStudentFromTeam(teams, studentIdentifier, teamId) {
   return updatedTeams;
 }
 
+// 엑셀 다운로드 함수
+function downloadTeamsToExcel(isStudentView = false) {
+  if (teams.length === 0) {
+    alert('다운로드할 팀 편성 결과가 없습니다.');
+    return;
+  }
+
+  const workbook = XLSX.utils.book_new();
+  const worksheetData = [];
+
+  // 헤더 행
+  const maxRecords = Math.max(...teams.flatMap(team => 
+    team.members.map(m => m.records.length)
+  ), 0);
+  
+  const headerRow = ['팀', '이름'];
+  for (let i = 1; i <= maxRecords; i++) {
+    headerRow.push(`기록${i}`);
+  }
+  headerRow.push('평균 기록');
+  worksheetData.push(headerRow);
+
+  // 각 팀별 데이터
+  teams.forEach(team => {
+    // 팀 구분선 (빈 행)
+    if (worksheetData.length > 1) {
+      worksheetData.push([]);
+    }
+
+    // 팀 헤더
+    const teamHeader = [`팀 ${team.id}`, `(${team.members.length}명)`];
+    for (let i = 0; i < maxRecords; i++) {
+      teamHeader.push('');
+    }
+    if (team.averageRecord) {
+      teamHeader.push(team.averageRecord.toFixed(1));
+    } else {
+      teamHeader.push('');
+    }
+    worksheetData.push(teamHeader);
+
+    // 팀 멤버들
+    team.members.forEach(member => {
+      // 학생용 뷰에서는 원래 이름을 찾아서 사용
+      let memberName = member.name;
+      if (isStudentView && member.originalIndex !== undefined) {
+        const originalStudent = students[member.originalIndex];
+        if (originalStudent) {
+          memberName = originalStudent.name;
+        }
+      }
+      
+      const row = [`팀 ${team.id}`, memberName];
+      
+      // 기록 추가 (학생용 뷰에서는 원래 학생의 기록 사용)
+      let recordsToUse = member.records;
+      if (isStudentView && member.originalIndex !== undefined) {
+        const originalStudent = students[member.originalIndex];
+        if (originalStudent) {
+          recordsToUse = originalStudent.records;
+        }
+      }
+      
+      for (let i = 0; i < maxRecords; i++) {
+        if (i < recordsToUse.length) {
+          row.push(recordsToUse[i]);
+        } else {
+          row.push('');
+        }
+      }
+      
+      // 평균 기록 계산
+      if (recordsToUse.length > 0) {
+        const avg = recordsToUse.reduce((sum, r) => sum + r, 0) / recordsToUse.length;
+        row.push(avg.toFixed(1));
+      } else {
+        row.push('');
+      }
+      
+      worksheetData.push(row);
+    });
+  });
+
+  // 미배정 학생 추가 (교사용 뷰에서만)
+  if (!isStudentView) {
+    const assignedNames = new Set(teams.flatMap(team => team.members.map(m => m.name)));
+    const unassigned = students.filter(s => !assignedNames.has(s.name));
+    
+    if (unassigned.length > 0) {
+      worksheetData.push([]);
+      worksheetData.push(['미배정 학생', '', ...Array(maxRecords).fill(''), '']);
+      unassigned.forEach(student => {
+        const row = ['', student.name];
+        for (let i = 0; i < maxRecords; i++) {
+          if (i < student.records.length) {
+            row.push(student.records[i]);
+          } else {
+            row.push('');
+          }
+        }
+        if (student.records.length > 0) {
+          const avg = student.records.reduce((sum, r) => sum + r, 0) / student.records.length;
+          row.push(avg.toFixed(1));
+        } else {
+          row.push('');
+        }
+        worksheetData.push(row);
+      });
+    }
+  }
+
+  // 워크시트 생성
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+  
+  // 열 너비 설정
+  const colWidths = [
+    { wch: 8 },  // 팀
+    { wch: 15 }, // 이름
+  ];
+  for (let i = 0; i < maxRecords; i++) {
+    colWidths.push({ wch: 10 }); // 기록들
+  }
+  colWidths.push({ wch: 12 }); // 평균 기록
+  worksheet['!cols'] = colWidths;
+
+  // 워크북에 시트 추가
+  XLSX.utils.book_append_sheet(workbook, worksheet, '팀 편성 결과');
+
+  // 파일명 생성
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const filename = `팀편성결과_${dateStr}.xlsx`;
+
+  // 다운로드
+  XLSX.writeFile(workbook, filename);
+}
+
 // UI 렌더링 함수들
 function showError(message) {
   const errorDiv = document.getElementById('error-message');
@@ -349,7 +486,15 @@ function renderTeams() {
   
   return `
     <div class="bg-white p-4 rounded-lg shadow-md">
-      <h3 class="text-xl font-bold mb-4">팀 편성 결과</h3>
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-xl font-bold">팀 편성 결과</h3>
+        <button id="download-teams-btn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+          </svg>
+          엑셀 다운로드
+        </button>
+      </div>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         ${teams.map(team => `
           <div class="text-center p-3 bg-blue-50 rounded-lg">
@@ -411,6 +556,14 @@ function renderTeams() {
 }
 
 function attachTeamEventListeners() {
+  // 엑셀 다운로드 버튼
+  const downloadBtn = document.getElementById('download-teams-btn');
+  if (downloadBtn) {
+    downloadBtn.addEventListener('click', () => {
+      downloadTeamsToExcel(false);
+    });
+  }
+  
   document.querySelectorAll('.remove-student-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const teamId = Number(e.target.dataset.teamId);
@@ -568,6 +721,14 @@ function renderStudentView() {
         renderStudentView();
       };
     }
+    
+    // 학생용 엑셀 다운로드 버튼 이벤트
+    const downloadStudentBtn = document.getElementById('download-student-teams-btn');
+    if (downloadStudentBtn) {
+      downloadStudentBtn.onclick = () => {
+        downloadTeamsToExcel(true);
+      };
+    }
   }
 }
 
@@ -676,6 +837,14 @@ function renderStudentTeams(unassigned, allStudentsAssigned) {
 function renderFinalTeams(allStudentsAssigned) {
   return `
     <div class="mt-4 space-y-4">
+      <div class="flex justify-end mb-2">
+        <button id="download-student-teams-btn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+          </svg>
+          엑셀 다운로드
+        </button>
+      </div>
       ${allStudentsAssigned ? `
         <div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
           <p class="text-green-800 font-medium">모든 학생이 팀에 배정되었습니다. 아래에서 최종 팀 명단을 확인하세요.</p>
