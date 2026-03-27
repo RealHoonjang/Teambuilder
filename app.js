@@ -21,49 +21,118 @@ function parseExcelFile(file) {
         
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        if (jsonData.length < 2) {
-          reject(new Error('엑셀 파일에 데이터가 충분하지 않습니다.'));
-          return;
-        }
-        
-        const headers = jsonData[0];
-        const nameColumnIndex = headers.findIndex(h => 
-          h && (h.includes('이름') || h.includes('성명') || h.includes('name') || h.includes('Name'))
-        );
-        
-        if (nameColumnIndex === -1) {
-          reject(new Error('이름 열을 찾을 수 없습니다. 헤더에 "이름" 또는 "성명"이 포함되어야 합니다.'));
-          return;
-        }
-        
-        const recordColumnIndices = [];
-        headers.forEach((header, index) => {
-          // 이름 열 이후의 열만 기록으로 인식
-          if (index > nameColumnIndex && header) {
-            const firstDataRow = jsonData[1];
-            if (firstDataRow && firstDataRow[index] !== undefined) {
-              const value = firstDataRow[index];
-              if (typeof value === 'number' || !isNaN(Number(value))) {
-                recordColumnIndices.push(index);
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+          header: 1,
+          defval: '',
+          raw: true,
+        });
+        const normalizedData = jsonData.map((row) => [...row]);
+
+        // 병합된 셀 값을 펼쳐서 헤더/데이터 탐지 정확도를 높임
+        const merges = worksheet['!merges'] || [];
+        merges.forEach((merge) => {
+          const startRow = merge.s.r;
+          const endRow = merge.e.r;
+          const startCol = merge.s.c;
+          const endCol = merge.e.c;
+          const topLeftValue = (normalizedData[startRow] || [])[startCol];
+          if (topLeftValue === '' || topLeftValue === undefined || topLeftValue === null) return;
+
+          for (let r = startRow; r <= endRow; r++) {
+            if (!normalizedData[r]) normalizedData[r] = [];
+            for (let c = startCol; c <= endCol; c++) {
+              if (normalizedData[r][c] === '' || normalizedData[r][c] === undefined || normalizedData[r][c] === null) {
+                normalizedData[r][c] = topLeftValue;
               }
             }
           }
         });
         
+        if (normalizedData.length < 2) {
+          reject(new Error('엑셀 파일에 데이터가 충분하지 않습니다.'));
+          return;
+        }
+
+        const toText = (value) => String(value ?? '').trim();
+        const isNameHeader = (value) => {
+          const text = toText(value).toLowerCase();
+          return text.includes('이름') || text.includes('성명') || text.includes('name');
+        };
+        const isNumericLike = (value) => {
+          if (value === '' || value === null || value === undefined) return false;
+          if (typeof value === 'number') return Number.isFinite(value);
+          return !Number.isNaN(Number(value));
+        };
+
+        // 병합/제목 행이 있을 수 있으므로 상단 여러 행에서 실제 헤더 행을 탐색
+        const scanRowLimit = Math.min(15, normalizedData.length);
+        const maxColCount = normalizedData.reduce((max, row) => Math.max(max, row.length), 0);
+        let bestHeader = null;
+
+        for (let rowIndex = 0; rowIndex < scanRowLimit; rowIndex++) {
+          const row = normalizedData[rowIndex] || [];
+          for (let colIndex = 0; colIndex < maxColCount; colIndex++) {
+            if (!isNameHeader(row[colIndex])) continue;
+
+            const candidateRecordCols = [];
+            for (let c = colIndex + 1; c < maxColCount; c++) {
+              let numericCount = 0;
+              const sampleEnd = Math.min(normalizedData.length, rowIndex + 31);
+              for (let r = rowIndex + 1; r < sampleEnd; r++) {
+                const sampleValue = (normalizedData[r] || [])[c];
+                if (isNumericLike(sampleValue)) numericCount++;
+              }
+              // 우연한 숫자(학번 등) 잡음을 줄이기 위해 최소 2건 이상 숫자 존재 시 기록 열로 채택
+              if (numericCount >= 2) candidateRecordCols.push(c);
+            }
+
+            if (!bestHeader || candidateRecordCols.length > bestHeader.recordColumnIndices.length) {
+              bestHeader = {
+                headerRowIndex: rowIndex,
+                nameColumnIndex: colIndex,
+                recordColumnIndices: candidateRecordCols,
+              };
+            }
+          }
+        }
+
+        if (!bestHeader || bestHeader.nameColumnIndex === -1) {
+          reject(new Error('이름 열을 찾을 수 없습니다. 헤더에 "이름" 또는 "성명"이 포함되어야 합니다.'));
+          return;
+        }
+
+        const { headerRowIndex, nameColumnIndex, recordColumnIndices } = bestHeader;
+
         if (recordColumnIndices.length === 0) {
           reject(new Error('숫자 기록 열을 찾을 수 없습니다.'));
           return;
         }
-        
+
+        // 헤더 아래에서 실제 데이터 시작 행 탐색 (병합된 추가 헤더/공백행 건너뜀)
+        let dataStartRowIndex = headerRowIndex + 1;
+        for (let i = headerRowIndex + 1; i < normalizedData.length; i++) {
+          const row = normalizedData[i] || [];
+          const name = toText(row[nameColumnIndex]);
+          const hasRecord = recordColumnIndices.some((idx) => isNumericLike(row[idx]));
+          const lowerName = name.toLowerCase();
+          const looksLikeHeaderAgain =
+            lowerName.includes('이름') ||
+            lowerName.includes('성명') ||
+            lowerName.includes('name');
+          if (name && hasRecord && !looksLikeHeaderAgain) {
+            dataStartRowIndex = i;
+            break;
+          }
+        }
+
         const parsedStudents = [];
-        for (let i = 1; i < jsonData.length; i++) {
-          const row = jsonData[i];
+        for (let i = dataStartRowIndex; i < normalizedData.length; i++) {
+          const row = normalizedData[i];
           if (!row || !row[nameColumnIndex]) continue;
           
-          const name = String(row[nameColumnIndex]).trim();
-          if (!name) continue;
+          const name = toText(row[nameColumnIndex]);
+          const lowerName = name.toLowerCase();
+          if (!name || lowerName.includes('이름') || lowerName.includes('성명') || lowerName.includes('name')) continue;
           
           const records = [];
           recordColumnIndices.forEach(index => {
