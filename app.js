@@ -204,53 +204,289 @@ function formRandomTeams(students, numTeams) {
   return teams;
 }
 
-function formBalancedTeams(students, numTeams) {
-  if (numTeams < 1 || students.length === 0) return [];
-  
-  const studentsWithScore = students.map(student => ({
-    ...student,
-    totalScore: student.records.length > 0 
-      ? student.records.reduce((sum, r) => sum + r, 0) / student.records.length
-      : 0,
-  }));
-  
-  studentsWithScore.sort((a, b) => b.totalScore - a.totalScore);
-  
+/** n개 중 k개 조합(인덱스 배열). k===0이면 [[]] 하나 */
+function combinationsOfSize(n, k) {
+  if (k === 0) return [[]];
+  if (k > n) return [];
+  const out = [];
+  const path = [];
+  function dfs(from) {
+    if (path.length === k) {
+      out.push([...path]);
+      return;
+    }
+    const need = k - path.length;
+    for (let i = from; i <= n - need; i++) {
+      path.push(i);
+      dfs(i + 1);
+      path.pop();
+    }
+  }
+  dfs(0);
+  return out;
+}
+
+/**
+ * 정원 상한 targetSizes 하에서 그리디 배정. spread 최소, 동률 시 인원 적은 팀 우선.
+ * 반환 전 team.averageRecord 계산.
+ */
+function assignBalancedTeamsGreedy(studentsWithStats, numTeams, targetSizes) {
   const teams = Array.from({ length: numTeams }, (_, i) => ({
     id: i + 1,
     members: [],
     averageRecord: 0,
   }));
-  
-  const teamScores = new Array(numTeams).fill(0);
-  
-  studentsWithScore.forEach((student) => {
-    let minScoreIndex = 0;
-    let minScore = teamScores[0];
-    
-    for (let i = 1; i < numTeams; i++) {
-      if (teamScores[i] < minScore) {
-        minScore = teamScores[i];
-        minScoreIndex = i;
+
+  const teamRecordSum = new Array(numTeams).fill(0);
+  const teamRecordCount = new Array(numTeams).fill(0);
+
+  studentsWithStats.forEach((student) => {
+    const eligible = [];
+    for (let i = 0; i < numTeams; i++) {
+      if (teams[i].members.length < targetSizes[i]) eligible.push(i);
+    }
+
+    let bestTeam = eligible[0];
+    let bestSpread = Infinity;
+
+    for (const j of eligible) {
+      const sums = teamRecordSum.slice();
+      const counts = teamRecordCount.slice();
+      sums[j] += student.recordSum;
+      counts[j] += student.recordCount;
+
+      const avgs = [];
+      for (let t = 0; t < numTeams; t++) {
+        if (counts[t] > 0) avgs.push(sums[t] / counts[t]);
+      }
+      const spread = avgs.length === 0 ? 0 : Math.max(...avgs) - Math.min(...avgs);
+
+      if (spread < bestSpread) {
+        bestSpread = spread;
+        bestTeam = j;
+      } else if (spread === bestSpread) {
+        const curBest = teams[bestTeam].members.length;
+        const curJ = teams[j].members.length;
+        if (curJ < curBest || (curJ === curBest && j < bestTeam)) {
+          bestTeam = j;
+        }
       }
     }
-    
-    teams[minScoreIndex].members.push({
+
+    teams[bestTeam].members.push({
       name: student.name,
       records: student.records,
     });
-    
-    teamScores[minScoreIndex] += student.totalScore;
+    teamRecordSum[bestTeam] += student.recordSum;
+    teamRecordCount[bestTeam] += student.recordCount;
   });
-  
-  teams.forEach(team => {
+
+  teams.forEach((team) => {
     if (team.members.length > 0 && team.members[0].records.length > 0) {
-      const allRecords = team.members.flatMap(s => s.records);
+      const allRecords = team.members.flatMap((s) => s.records);
       team.averageRecord = allRecords.reduce((sum, r) => sum + r, 0) / allRecords.length;
     }
   });
-  
+
   return teams;
+}
+
+/** 편차·공정성(평균 높은 팀은 인원 적게) 기준으로 결과 비교: 음수면 a가 더 좋음 */
+function compareBalancedOutcomes(teamsA, teamsB) {
+  const stats = (teams) => {
+    const avgs = teams.map((t) => t.averageRecord || 0);
+    const sizes = teams.map((t) => t.members.length);
+    const maxAvg = Math.max(...avgs);
+    const minAvg = Math.min(...avgs);
+    const minSz = Math.min(...sizes);
+    const maxSz = Math.max(...sizes);
+    const spread = maxAvg - minAvg;
+    const eps = 1e-9;
+    const hiIdx = avgs.map((a, i) => (a >= maxAvg - eps ? i : -1)).filter((i) => i >= 0);
+    const loIdx = avgs.map((a, i) => (a <= minAvg + eps ? i : -1)).filter((i) => i >= 0);
+    /** 최고 평균 팀이 가장 적은 인원이 아니면 불이익 */
+    const hiOversize = Math.max(...hiIdx.map((i) => sizes[i] - minSz));
+    /** 최저 평균 팀이 가장 많은 인원이 아니면 불이익 */
+    const loUndersize = Math.max(...loIdx.map((i) => maxSz - sizes[i]));
+    return { spread, hiOversize, loUndersize };
+  };
+  const a = stats(teamsA);
+  const b = stats(teamsB);
+  if (a.spread !== b.spread) return a.spread - b.spread;
+  if (a.hiOversize !== b.hiOversize) return a.hiOversize - b.hiOversize;
+  if (a.loUndersize !== b.loUndersize) return a.loUndersize - b.loUndersize;
+  return 0;
+}
+
+function cloneTeams(teams) {
+  return teams.map((team) => ({
+    ...team,
+    members: team.members.map((m) => ({ ...m, records: [...(m.records || [])] })),
+  }));
+}
+
+function computeObjective(teams) {
+  const avgs = teams.map((t) => t.averageRecord || 0);
+  const sizes = teams.map((t) => t.members.length);
+  const maxAvg = Math.max(...avgs);
+  const minAvg = Math.min(...avgs);
+  const minSz = Math.min(...sizes);
+  const maxSz = Math.max(...sizes);
+  const spread = maxAvg - minAvg;
+  const eps = 1e-9;
+  const hiIdx = avgs.map((a, i) => (a >= maxAvg - eps ? i : -1)).filter((i) => i >= 0);
+  const loIdx = avgs.map((a, i) => (a <= minAvg + eps ? i : -1)).filter((i) => i >= 0);
+  const hiOversize = Math.max(...hiIdx.map((i) => sizes[i] - minSz));
+  const loUndersize = Math.max(...loIdx.map((i) => maxSz - sizes[i]));
+  return { spread, hiOversize, loUndersize };
+}
+
+function compareObjective(a, b) {
+  if (a.spread !== b.spread) return a.spread - b.spread;
+  if (a.hiOversize !== b.hiOversize) return a.hiOversize - b.hiOversize;
+  if (a.loUndersize !== b.loUndersize) return a.loUndersize - b.loUndersize;
+  return 0;
+}
+
+function shuffleArray(arr) {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function buildTeamsFromOrderedStudents(orderedStudents, numTeams, targetSizes) {
+  const teams = Array.from({ length: numTeams }, (_, i) => ({
+    id: i + 1,
+    members: [],
+    averageRecord: 0,
+  }));
+
+  let index = 0;
+  for (let i = 0; i < numTeams; i++) {
+    const size = targetSizes[i];
+    for (let c = 0; c < size; c++) {
+      const s = orderedStudents[index++];
+      teams[i].members.push({ name: s.name, records: s.records });
+    }
+  }
+
+  teams.forEach((team) => {
+    if (team.members.length > 0 && team.members[0].records.length > 0) {
+      const allRecords = team.members.flatMap((s) => s.records);
+      team.averageRecord = allRecords.reduce((sum, r) => sum + r, 0) / allRecords.length;
+    } else {
+      team.averageRecord = 0;
+    }
+  });
+
+  return teams;
+}
+
+/** 현재 배정에서 팀 간 1:1 스왑을 탐색해 목적함수를 개선 */
+function optimizeByPairSwaps(initialTeams, maxPasses = 8) {
+  const teams = cloneTeams(initialTeams);
+  let currentObj = computeObjective(teams);
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+
+    for (let i = 0; i < teams.length; i++) {
+      for (let j = i + 1; j < teams.length; j++) {
+        for (let ai = 0; ai < teams[i].members.length; ai++) {
+          for (let bi = 0; bi < teams[j].members.length; bi++) {
+            const next = cloneTeams(teams);
+            const a = next[i].members[ai];
+            const b = next[j].members[bi];
+            next[i].members[ai] = b;
+            next[j].members[bi] = a;
+
+            next.forEach((team) => {
+              if (team.members.length > 0 && team.members[0].records.length > 0) {
+                const allRecords = team.members.flatMap((s) => s.records);
+                team.averageRecord = allRecords.reduce((sum, r) => sum + r, 0) / allRecords.length;
+              } else {
+                team.averageRecord = 0;
+              }
+            });
+
+            const nextObj = computeObjective(next);
+            if (compareObjective(nextObj, currentObj) < 0) {
+              for (let t = 0; t < teams.length; t++) {
+                teams[t].members = next[t].members;
+                teams[t].averageRecord = next[t].averageRecord;
+              }
+              currentObj = nextObj;
+              improved = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return teams;
+}
+
+function formBalancedTeams(students, numTeams) {
+  if (numTeams < 1 || students.length === 0) return [];
+
+  const n = students.length;
+  const baseSize = Math.floor(n / numTeams);
+  const remainder = n % numTeams;
+
+  const studentsWithStats = students.map((student) => {
+    const records = student.records || [];
+    const recordSum = records.reduce((sum, r) => sum + r, 0);
+    const recordCount = records.length;
+    const meanRecord = recordCount > 0 ? recordSum / recordCount : 0;
+    return { ...student, recordSum, recordCount, meanRecord };
+  });
+
+  studentsWithStats.sort((a, b) => b.meanRecord - a.meanRecord);
+
+  let extraTeamIndexSets = combinationsOfSize(numTeams, remainder);
+  const maxComb = 2500;
+  if (extraTeamIndexSets.length > maxComb) {
+    const step = Math.ceil(extraTeamIndexSets.length / maxComb);
+    extraTeamIndexSets = extraTeamIndexSets.filter((_, idx) => idx % step === 0);
+  }
+
+  let bestTeams = null;
+  for (const extraIndices of extraTeamIndexSets) {
+    const extraSet = new Set(extraIndices);
+    const targetSizes = Array.from({ length: numTeams }, (_, i) => baseSize + (extraSet.has(i) ? 1 : 0));
+    const localCandidates = [];
+
+    // 1) 기존 그리디 시작점
+    const greedy = assignBalancedTeamsGreedy(studentsWithStats, numTeams, targetSizes);
+    localCandidates.push(optimizeByPairSwaps(greedy));
+
+    // 2) 랜덤 시작점 다중 탐색(경우의 수 근사)
+    const randomStartCount = Math.min(80, 15 + studentsWithStats.length);
+    for (let r = 0; r < randomStartCount; r++) {
+      const randomOrdered = shuffleArray(studentsWithStats);
+      const randomSeedTeams = buildTeamsFromOrderedStudents(randomOrdered, numTeams, targetSizes);
+      localCandidates.push(optimizeByPairSwaps(randomSeedTeams));
+    }
+
+    let bestLocal = localCandidates[0];
+    for (let i = 1; i < localCandidates.length; i++) {
+      if (compareBalancedOutcomes(localCandidates[i], bestLocal) < 0) {
+        bestLocal = localCandidates[i];
+      }
+    }
+
+    if (!bestTeams || compareBalancedOutcomes(bestLocal, bestTeams) < 0) {
+      bestTeams = bestLocal;
+    }
+  }
+
+  return bestTeams;
 }
 
 function initializeManualTeams(students, numTeams) {
@@ -499,7 +735,7 @@ function renderTeacherView() {
               </label>
               <label class="flex items-center">
                 <input type="radio" name="mode" value="balanced" ${mode === 'balanced' ? 'checked' : ''} class="mr-2">
-                <span>밸런스 편성 (기록 기반 균형)</span>
+                <span>밸런스 편성(인원·기록 밸런스)</span>
               </label>
               <label class="flex items-center">
                 <input type="radio" name="mode" value="manual" ${mode === 'manual' ? 'checked' : ''} class="mr-2">
