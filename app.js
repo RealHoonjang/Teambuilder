@@ -2,7 +2,7 @@
 let students = [];
 let viewMode = 'upload'; // 'upload' | 'teacher' | 'student'
 let numTeams = 4;
-let mode = 'random'; // 'random' | 'balanced' | 'manual'
+let mode = 'random'; // 'random' | 'balanced' | 'gender_balanced' | 'manual'
 let teams = [];
 let selectedStudent = null;
 let selectedStudentIndex = null;
@@ -58,6 +58,17 @@ function parseExcelFile(file) {
           const text = toText(value).toLowerCase();
           return text.includes('이름') || text.includes('성명') || text.includes('name');
         };
+        const isGenderHeader = (value) => {
+          const text = toText(value).toLowerCase();
+          return text.includes('성별') || text === 'gender' || text === 'sex';
+        };
+        const normalizeGender = (value) => {
+          const text = toText(value).toLowerCase();
+          if (!text) return null;
+          if (text.includes('남') || text === 'm' || text === 'male') return '남';
+          if (text.includes('여') || text === 'f' || text === 'female') return '여';
+          return null;
+        };
         const isNumericLike = (value) => {
           if (value === '' || value === null || value === undefined) return false;
           if (typeof value === 'number') return Number.isFinite(value);
@@ -86,11 +97,20 @@ function parseExcelFile(file) {
               if (numericCount >= 2) candidateRecordCols.push(c);
             }
 
+            let genderColumnIndex = -1;
+            for (let c = 0; c <= colIndex; c++) {
+              if (isGenderHeader(row[c])) {
+                genderColumnIndex = c;
+                break;
+              }
+            }
+
             if (!bestHeader || candidateRecordCols.length > bestHeader.recordColumnIndices.length) {
               bestHeader = {
                 headerRowIndex: rowIndex,
                 nameColumnIndex: colIndex,
                 recordColumnIndices: candidateRecordCols,
+                genderColumnIndex,
               };
             }
           }
@@ -101,7 +121,7 @@ function parseExcelFile(file) {
           return;
         }
 
-        const { headerRowIndex, nameColumnIndex, recordColumnIndices } = bestHeader;
+        const { headerRowIndex, nameColumnIndex, recordColumnIndices, genderColumnIndex } = bestHeader;
 
         if (recordColumnIndices.length === 0) {
           reject(new Error('숫자 기록 열을 찾을 수 없습니다.'));
@@ -146,7 +166,8 @@ function parseExcelFile(file) {
           });
           
           if (records.length > 0) {
-            parsedStudents.push({ name, records });
+            const gender = genderColumnIndex >= 0 ? normalizeGender(row[genderColumnIndex]) : null;
+            parsedStudents.push({ name, records, gender });
           }
         }
         
@@ -276,6 +297,7 @@ function assignBalancedTeamsGreedy(studentsWithStats, numTeams, targetSizes) {
     teams[bestTeam].members.push({
       name: student.name,
       records: student.records,
+      gender: student.gender || null,
     });
     teamRecordSum[bestTeam] += student.recordSum;
     teamRecordCount[bestTeam] += student.recordCount;
@@ -321,7 +343,7 @@ function compareBalancedOutcomes(teamsA, teamsB) {
 function cloneTeams(teams) {
   return teams.map((team) => ({
     ...team,
-    members: team.members.map((m) => ({ ...m, records: [...(m.records || [])] })),
+    members: team.members.map((m) => ({ ...m, records: [...(m.records || [])], gender: m.gender || null })),
   }));
 }
 
@@ -369,9 +391,160 @@ function buildTeamsFromOrderedStudents(orderedStudents, numTeams, targetSizes) {
     const size = targetSizes[i];
     for (let c = 0; c < size; c++) {
       const s = orderedStudents[index++];
-      teams[i].members.push({ name: s.name, records: s.records });
+      teams[i].members.push({ name: s.name, records: s.records, gender: s.gender || null });
     }
   }
+
+  teams.forEach((team) => {
+    if (team.members.length > 0 && team.members[0].records.length > 0) {
+      const allRecords = team.members.flatMap((s) => s.records);
+      team.averageRecord = allRecords.reduce((sum, r) => sum + r, 0) / allRecords.length;
+    } else {
+      team.averageRecord = 0;
+    }
+  });
+
+  return teams;
+}
+
+function hasGenderData(students) {
+  return students.some((s) => s.gender === '남' || s.gender === '여');
+}
+
+function computeGenderAwareObjective(teams) {
+  const avgs = teams.map((t) => t.averageRecord || 0);
+  const recordSpread = Math.max(...avgs) - Math.min(...avgs);
+
+  const maleCounts = teams.map((t) => t.members.filter((m) => m.gender === '남').length);
+  const femaleCounts = teams.map((t) => t.members.filter((m) => m.gender === '여').length);
+  const genderSpread =
+    (Math.max(...maleCounts) - Math.min(...maleCounts)) +
+    (Math.max(...femaleCounts) - Math.min(...femaleCounts));
+  const genderImbalance = teams.reduce((sum, t) => {
+    const male = t.members.filter((m) => m.gender === '남').length;
+    const female = t.members.filter((m) => m.gender === '여').length;
+    return sum + Math.abs(male - female);
+  }, 0);
+
+  return { genderSpread, genderImbalance, recordSpread };
+}
+
+function compareGenderAwareObjective(a, b) {
+  if (a.genderSpread !== b.genderSpread) return a.genderSpread - b.genderSpread;
+  if (a.genderImbalance !== b.genderImbalance) return a.genderImbalance - b.genderImbalance;
+  if (a.recordSpread !== b.recordSpread) return a.recordSpread - b.recordSpread;
+  return 0;
+}
+
+function optimizeByPairSwapsWithComparator(initialTeams, objectiveFn, compareFn, maxPasses = 8) {
+  const teams = cloneTeams(initialTeams);
+  let currentObj = objectiveFn(teams);
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+
+    for (let i = 0; i < teams.length; i++) {
+      for (let j = i + 1; j < teams.length; j++) {
+        for (let ai = 0; ai < teams[i].members.length; ai++) {
+          for (let bi = 0; bi < teams[j].members.length; bi++) {
+            const next = cloneTeams(teams);
+            const a = next[i].members[ai];
+            const b = next[j].members[bi];
+            next[i].members[ai] = b;
+            next[j].members[bi] = a;
+
+            next.forEach((team) => {
+              if (team.members.length > 0 && team.members[0].records.length > 0) {
+                const allRecords = team.members.flatMap((s) => s.records);
+                team.averageRecord = allRecords.reduce((sum, r) => sum + r, 0) / allRecords.length;
+              } else {
+                team.averageRecord = 0;
+              }
+            });
+
+            const nextObj = objectiveFn(next);
+            if (compareFn(nextObj, currentObj) < 0) {
+              for (let t = 0; t < teams.length; t++) {
+                teams[t].members = next[t].members;
+                teams[t].averageRecord = next[t].averageRecord;
+              }
+              currentObj = nextObj;
+              improved = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return teams;
+}
+
+function assignGenderBalancedTeamsGreedy(studentsWithStats, numTeams, targetSizes) {
+  const teams = Array.from({ length: numTeams }, (_, i) => ({
+    id: i + 1,
+    members: [],
+    averageRecord: 0,
+  }));
+
+  const teamRecordSum = new Array(numTeams).fill(0);
+  const teamRecordCount = new Array(numTeams).fill(0);
+  const maleCounts = new Array(numTeams).fill(0);
+  const femaleCounts = new Array(numTeams).fill(0);
+
+  studentsWithStats.forEach((student) => {
+    const eligible = [];
+    for (let i = 0; i < numTeams; i++) {
+      if (teams[i].members.length < targetSizes[i]) eligible.push(i);
+    }
+
+    let bestTeam = eligible[0];
+    let bestObjective = null;
+
+    for (const j of eligible) {
+      const sums = teamRecordSum.slice();
+      const counts = teamRecordCount.slice();
+      const males = maleCounts.slice();
+      const females = femaleCounts.slice();
+
+      sums[j] += student.recordSum;
+      counts[j] += student.recordCount;
+      if (student.gender === '남') males[j] += 1;
+      if (student.gender === '여') females[j] += 1;
+
+      const avgs = [];
+      for (let t = 0; t < numTeams; t++) {
+        if (counts[t] > 0) avgs.push(sums[t] / counts[t]);
+      }
+      const recordSpread = avgs.length === 0 ? 0 : Math.max(...avgs) - Math.min(...avgs);
+      const genderSpread =
+        (Math.max(...males) - Math.min(...males)) +
+        (Math.max(...females) - Math.min(...females));
+      const genderImbalance = males.reduce((sum, male, idx) => sum + Math.abs(male - females[idx]), 0);
+
+      const candidateObjective = { genderSpread, genderImbalance, recordSpread };
+      if (!bestObjective || compareGenderAwareObjective(candidateObjective, bestObjective) < 0) {
+        bestObjective = candidateObjective;
+        bestTeam = j;
+      } else if (compareGenderAwareObjective(candidateObjective, bestObjective) === 0) {
+        const curBest = teams[bestTeam].members.length;
+        const curJ = teams[j].members.length;
+        if (curJ < curBest || (curJ === curBest && j < bestTeam)) bestTeam = j;
+      }
+    }
+
+    teams[bestTeam].members.push({
+      name: student.name,
+      records: student.records,
+      gender: student.gender || null,
+    });
+    teamRecordSum[bestTeam] += student.recordSum;
+    teamRecordCount[bestTeam] += student.recordCount;
+    if (student.gender === '남') maleCounts[bestTeam] += 1;
+    if (student.gender === '여') femaleCounts[bestTeam] += 1;
+  });
 
   teams.forEach((team) => {
     if (team.members.length > 0 && team.members[0].records.length > 0) {
@@ -482,6 +655,75 @@ function formBalancedTeams(students, numTeams) {
     }
 
     if (!bestTeams || compareBalancedOutcomes(bestLocal, bestTeams) < 0) {
+      bestTeams = bestLocal;
+    }
+  }
+
+  return bestTeams;
+}
+
+function formGenderBalancedTeams(students, numTeams) {
+  if (numTeams < 1 || students.length === 0) return [];
+  if (!hasGenderData(students)) return formBalancedTeams(students, numTeams);
+
+  const n = students.length;
+  const baseSize = Math.floor(n / numTeams);
+  const remainder = n % numTeams;
+
+  const studentsWithStats = students.map((student) => {
+    const records = student.records || [];
+    const recordSum = records.reduce((sum, r) => sum + r, 0);
+    const recordCount = records.length;
+    const meanRecord = recordCount > 0 ? recordSum / recordCount : 0;
+    return { ...student, recordSum, recordCount, meanRecord };
+  });
+
+  studentsWithStats.sort((a, b) => {
+    // 성별을 먼저 섞기 위해 기록 정렬 + 이름 타이브레이크
+    if (b.meanRecord !== a.meanRecord) return b.meanRecord - a.meanRecord;
+    return String(a.name).localeCompare(String(b.name), 'ko');
+  });
+
+  let extraTeamIndexSets = combinationsOfSize(numTeams, remainder);
+  const maxComb = 2500;
+  if (extraTeamIndexSets.length > maxComb) {
+    const step = Math.ceil(extraTeamIndexSets.length / maxComb);
+    extraTeamIndexSets = extraTeamIndexSets.filter((_, idx) => idx % step === 0);
+  }
+
+  let bestTeams = null;
+  for (const extraIndices of extraTeamIndexSets) {
+    const extraSet = new Set(extraIndices);
+    const targetSizes = Array.from({ length: numTeams }, (_, i) => baseSize + (extraSet.has(i) ? 1 : 0));
+    const localCandidates = [];
+
+    const greedy = assignGenderBalancedTeamsGreedy(studentsWithStats, numTeams, targetSizes);
+    localCandidates.push(optimizeByPairSwapsWithComparator(greedy, computeGenderAwareObjective, compareGenderAwareObjective));
+
+    const randomStartCount = Math.min(80, 15 + studentsWithStats.length);
+    for (let r = 0; r < randomStartCount; r++) {
+      const randomOrdered = shuffleArray(studentsWithStats);
+      const randomSeedTeams = buildTeamsFromOrderedStudents(randomOrdered, numTeams, targetSizes);
+      localCandidates.push(
+        optimizeByPairSwapsWithComparator(
+          randomSeedTeams,
+          computeGenderAwareObjective,
+          compareGenderAwareObjective
+        )
+      );
+    }
+
+    let bestLocal = localCandidates[0];
+    for (let i = 1; i < localCandidates.length; i++) {
+      if (compareGenderAwareObjective(computeGenderAwareObjective(localCandidates[i]), computeGenderAwareObjective(bestLocal)) < 0) {
+        bestLocal = localCandidates[i];
+      }
+    }
+
+    if (
+      !bestTeams ||
+      compareGenderAwareObjective(computeGenderAwareObjective(bestLocal), computeGenderAwareObjective(bestTeams)) < 0
+    ) {
       bestTeams = bestLocal;
     }
   }
@@ -714,6 +956,10 @@ function renderMainView() {
 function renderTeacherView() {
   document.getElementById('teacher-view').classList.remove('hidden');
   document.getElementById('student-view').classList.add('hidden');
+  const enableGenderMode = hasGenderData(students);
+  if (!enableGenderMode && mode === 'gender_balanced') {
+    mode = 'balanced';
+  }
   
   const container = document.getElementById('teacher-view');
   container.innerHTML = `
@@ -735,8 +981,14 @@ function renderTeacherView() {
               </label>
               <label class="flex items-center">
                 <input type="radio" name="mode" value="balanced" ${mode === 'balanced' ? 'checked' : ''} class="mr-2">
-                <span>밸런스 편성(인원·기록 밸런스)</span>
+                <span>${enableGenderMode ? '밸런스 편성(성별 무작위)' : '밸런스 편성(인원·기록 밸런스)'}</span>
               </label>
+              ${enableGenderMode ? `
+                <label class="flex items-center">
+                  <input type="radio" name="mode" value="gender_balanced" ${mode === 'gender_balanced' ? 'checked' : ''} class="mr-2">
+                  <span>밸런스 편성(성별까지 고려)</span>
+                </label>
+              ` : ''}
               <label class="flex items-center">
                 <input type="radio" name="mode" value="manual" ${mode === 'manual' ? 'checked' : ''} class="mr-2">
                 <span>수동 편성(교사가 직접 조정)</span>
@@ -786,6 +1038,12 @@ function renderTeams() {
     const assignedNames = new Set(teams.flatMap(team => team.members.map(m => m.name)));
     return students.filter(s => !assignedNames.has(s.name));
   };
+  const showGenderInfo = mode === 'gender_balanced';
+  const getGenderCounts = (team) => {
+    const male = team.members.filter((m) => m.gender === '남').length;
+    const female = team.members.filter((m) => m.gender === '여').length;
+    return { male, female };
+  };
   
   const unassigned = getUnassignedStudents();
   
@@ -806,6 +1064,7 @@ function renderTeams() {
             <div class="text-sm text-gray-600">팀 ${team.id}</div>
             <div class="text-2xl font-bold text-blue-600">${team.members.length}명</div>
             ${team.averageRecord ? `<div class="text-xs text-gray-500 mt-1">평균: ${team.averageRecord.toFixed(1)}</div>` : ''}
+            ${showGenderInfo ? `<div class="text-xs text-gray-500 mt-1">남 ${getGenderCounts(team).male}명 / 여 ${getGenderCounts(team).female}명</div>` : ''}
           </div>
         `).join('')}
       </div>
@@ -815,13 +1074,13 @@ function renderTeams() {
         <div class="bg-white p-4 rounded-lg shadow-md border-2 border-gray-200">
           <div class="flex justify-between items-center mb-3">
             <h3 class="text-lg font-bold text-gray-800">팀 ${team.id} (${team.members.length}명)</h3>
-            ${team.averageRecord ? `<span class="text-sm text-gray-600">평균: ${team.averageRecord.toFixed(1)}</span>` : ''}
+            ${team.averageRecord ? `<span class="text-sm text-gray-600">평균: ${team.averageRecord.toFixed(1)}${showGenderInfo ? ` | 남 ${getGenderCounts(team).male}명 / 여 ${getGenderCounts(team).female}명` : ''}</span>` : ''}
           </div>
           <div class="space-y-2 mb-3">
             ${team.members.map(member => `
               <div class="flex justify-between items-center p-2 bg-gray-50 rounded hover:bg-gray-100 transition-colors">
                 <div class="flex-1">
-                  <span class="text-sm font-medium text-gray-700">${member.name}</span>
+                  <span class="text-sm font-medium text-gray-700">${member.name}${showGenderInfo ? ` (${member.gender || '-'})` : ''}</span>
                   ${member.records.length > 0 ? `
                     <div class="text-xs text-gray-500 mt-1">
                       기록: ${member.records.map((r, idx) => `<span class="mr-1">${r}</span>`).join('')}
@@ -908,6 +1167,8 @@ function handleFormTeams() {
     teams = formRandomTeams(students, numTeams);
   } else if (mode === 'balanced') {
     teams = formBalancedTeams(students, numTeams);
+  } else if (mode === 'gender_balanced') {
+    teams = formGenderBalancedTeams(students, numTeams);
   } else {
     teams = initializeManualTeams(students, numTeams);
   }
