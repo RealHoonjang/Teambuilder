@@ -8,6 +8,9 @@ let selectedStudent = null;
 let selectedStudentIndex = null;
 let showFinalTeams = false;
 let anonymizedStudents = [];
+/** 학생용 기록 표시: 'line' 연속 데이터(꺾은선), 'radar' 독립 항목(레이더) */
+let studentRecordChartType = 'line';
+let studentRecordChartInstances = [];
 
 // 엑셀 파일 파싱
 function parseExcelFile(file) {
@@ -1202,10 +1205,113 @@ function initializeAnonymizedStudents() {
   showFinalTeams = false;
 }
 
+function destroyStudentRecordCharts() {
+  studentRecordChartInstances.forEach((c) => {
+    try {
+      c.destroy();
+    } catch (_) {
+      /* noop */
+    }
+  });
+  studentRecordChartInstances = [];
+}
+
+function buildStudentRecordLabels(records) {
+  return records.map((_, i) => `기록${i + 1}`);
+}
+
+function createStudentRecordCharts() {
+  if (typeof Chart === 'undefined') return;
+  document.querySelectorAll('.student-record-canvas').forEach((canvas) => {
+    const idx = Number(canvas.dataset.anonIndex);
+    const student = anonymizedStudents[idx];
+    if (!student || !student.records || student.records.length === 0) return;
+
+    const labels = buildStudentRecordLabels(student.records);
+    const values = student.records.map((v) => Number(v));
+    const maxVal = Math.max(...values, 0);
+    const yMax = Math.max(5, Math.ceil(maxVal * 1.15));
+
+    const dataset = {
+      label: student.id,
+      data: values,
+      borderColor: 'rgb(37, 99, 235)',
+      backgroundColor:
+        studentRecordChartType === 'radar' ? 'rgba(37, 99, 235, 0.22)' : 'rgba(37, 99, 235, 0.12)',
+      borderWidth: 2,
+      pointBackgroundColor: 'rgb(37, 99, 235)',
+      pointBorderColor: '#fff',
+      pointRadius: studentRecordChartType === 'line' ? 4 : 3,
+      pointHoverRadius: 5,
+      fill: studentRecordChartType === 'radar',
+      tension: studentRecordChartType === 'line' ? 0.15 : 0,
+    };
+
+    const commonPlugins = {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label(ctx) {
+            return `${ctx.label}: ${ctx.formattedValue}`;
+          },
+        },
+      },
+    };
+
+    let config;
+    if (studentRecordChartType === 'radar') {
+      config = {
+        type: 'radar',
+        data: { labels, datasets: [dataset] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: commonPlugins,
+          scales: {
+            r: {
+              beginAtZero: true,
+              suggestedMin: 0,
+              suggestedMax: yMax,
+              ticks: { stepSize: 1, backdropColor: 'transparent' },
+              pointLabels: { font: { size: 10 } },
+            },
+          },
+        },
+      };
+    } else {
+      config = {
+        type: 'line',
+        data: { labels, datasets: [dataset] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: commonPlugins,
+          scales: {
+            x: {
+              ticks: { font: { size: 10 }, maxRotation: 45 },
+              grid: { display: false },
+            },
+            y: {
+              beginAtZero: true,
+              suggestedMax: yMax,
+              ticks: { stepSize: 1 },
+            },
+          },
+        },
+      };
+    }
+
+    const chart = new Chart(canvas.getContext('2d'), config);
+    studentRecordChartInstances.push(chart);
+  });
+}
+
 function renderStudentView() {
   document.getElementById('teacher-view').classList.add('hidden');
   document.getElementById('student-view').classList.remove('hidden');
-  
+
+  destroyStudentRecordCharts();
+
   // anonymizedStudents가 비어있을 때만 초기화 (팀 편성 중에는 초기화하지 않음)
   if (anonymizedStudents.length === 0) {
     initializeAnonymizedStudents();
@@ -1247,6 +1353,15 @@ function renderStudentView() {
   
   // 이벤트 위임을 사용하여 student-view 컨테이너에 이벤트 리스너 추가
   container.onclick = (e) => {
+    const chartTypeBtn = e.target.closest('[data-student-chart-type]');
+    if (chartTypeBtn) {
+      const t = chartTypeBtn.getAttribute('data-student-chart-type');
+      if (t === 'line' || t === 'radar') {
+        studentRecordChartType = t;
+        renderStudentView();
+      }
+      return;
+    }
     if (e.target.id === 'init-teams-btn') {
       e.preventDefault();
       const numTeamsInput = document.getElementById('student-num-teams');
@@ -1295,6 +1410,10 @@ function renderStudentView() {
         downloadTeamsToExcel(true);
       };
     }
+
+    requestAnimationFrame(() => {
+      createStudentRecordCharts();
+    });
   }
 }
 
@@ -1313,7 +1432,30 @@ function renderStudentTeams(unassigned, allStudentsAssigned) {
       </div>
     </div>
     <div class="bg-white p-6 rounded-lg shadow-md">
-      <h3 class="text-xl font-bold mb-4">학생 데이터 (이름 숨김)</h3>
+      <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
+        <h3 class="text-xl font-bold">학생 데이터 (이름 숨김)</h3>
+        <div class="flex flex-col gap-1 shrink-0">
+          <span class="text-xs text-gray-500">기록 표시 방식</span>
+          <div class="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50" role="group" aria-label="기록 차트 유형">
+            <button type="button" data-student-chart-type="line"
+              class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                studentRecordChartType === 'line'
+                  ? 'bg-white text-blue-700 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+              }">
+              꺾은선 (연속 데이터)
+            </button>
+            <button type="button" data-student-chart-type="radar"
+              class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                studentRecordChartType === 'radar'
+                  ? 'bg-white text-blue-700 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+              }">
+              레이더 (독립 항목)
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         ${anonymizedStudents.map((student, index) => {
           const isAssigned = teams.some(team => team.members.some(m => m.id === student.id));
@@ -1326,10 +1468,8 @@ function renderStudentTeams(unassigned, allStudentsAssigned) {
                 : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-md cursor-pointer'
             }" data-index="${index}" ${isAssigned ? '' : 'style="cursor: pointer;"'}>
               <div class="font-medium text-gray-800 mb-2">${student.id}</div>
-              <div class="text-sm text-gray-600 space-y-1">
-                ${student.records.map((record, idx) => `
-                  <div>기록${idx + 1}: ${record}</div>
-                `).join('')}
+              <div class="student-chart-area h-44 w-full relative">
+                <canvas class="student-record-canvas" data-anon-index="${index}" aria-label="${student.id} 기록 차트"></canvas>
               </div>
               ${isAssigned ? '<div class="text-xs text-gray-500 mt-2">이미 배정됨</div>' : ''}
             </div>
@@ -1451,6 +1591,10 @@ function renderFinalTeams(allStudentsAssigned) {
 }
 
 function attachStudentEventListeners(unassigned) {
+  document.querySelectorAll('.student-chart-area').forEach((el) => {
+    el.addEventListener('click', (e) => e.stopPropagation());
+  });
+
   document.querySelectorAll('.student-card').forEach(card => {
     if (!card.classList.contains('opacity-60')) {
       card.addEventListener('click', (e) => {
