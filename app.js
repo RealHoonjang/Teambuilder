@@ -1448,6 +1448,26 @@ function getStudentTeamGenderCounts(team) {
   return { male, female };
 }
 
+function getStudentAssignedTeamId(studentId) {
+  const team = teams.find((t) => t.members.some((m) => m.id === studentId));
+  return team ? team.id : null;
+}
+
+function assignStudentToTeamFromCard(studentIndex, teamId) {
+  const student = anonymizedStudents[studentIndex];
+  if (!student || !teamId) return;
+
+  const currentTeamId = getStudentAssignedTeamId(student.id);
+  if (currentTeamId === teamId) return;
+
+  if (currentTeamId) {
+    teams = removeStudentFromTeam(teams, student.id, currentTeamId);
+  }
+  teams = addStudentToTeam(teams, student, teamId);
+  selectedStudentIndex = null;
+  renderStudentView();
+}
+
 function renderStudentTeams(unassigned, allStudentsAssigned) {
   return `
     <div class="bg-white p-4 rounded-lg shadow-md">
@@ -1493,11 +1513,12 @@ function renderStudentTeams(unassigned, allStudentsAssigned) {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         ${anonymizedStudents.map((student, index) => {
-          const isAssigned = teams.some(team => team.members.some(m => m.id === student.id));
+          const assignedTeamId = getStudentAssignedTeamId(student.id);
+          const isAssigned = assignedTeamId !== null;
           return `
             <div class="student-card p-3 rounded-lg border-2 transition-all ${
-              isAssigned 
-                ? 'bg-gray-100 border-gray-300 opacity-60 cursor-not-allowed' 
+              isAssigned
+                ? 'bg-gray-50 border-gray-300'
                 : selectedStudentIndex === index
                 ? 'bg-blue-100 border-blue-500 ring-2 ring-blue-300'
                 : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-md cursor-pointer'
@@ -1505,20 +1526,28 @@ function renderStudentTeams(unassigned, allStudentsAssigned) {
               <div class="flex items-center gap-2 mb-2">
                 <span class="font-medium text-gray-800">${student.id}</span>
                 ${renderStudentGenderBadge(student.gender)}
+                ${isAssigned ? `<span class="text-xs text-gray-500">→ 팀 ${assignedTeamId}</span>` : ''}
               </div>
               <div class="student-chart-area h-44 w-full relative">
                 <canvas class="student-record-canvas" data-anon-index="${index}" aria-label="${student.id} 기록 차트"></canvas>
               </div>
-              ${isAssigned ? '<div class="text-xs text-gray-500 mt-2">이미 배정됨</div>' : ''}
+              <div class="student-card-actions mt-2">
+                <select class="student-card-team-select w-full px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white" data-student-index="${index}">
+                  <option value="">팀 선택...</option>
+                  ${teams.map((team) => `
+                    <option value="${team.id}" ${assignedTeamId === team.id ? 'selected' : ''}>팀 ${team.id}</option>
+                  `).join('')}
+                </select>
+              </div>
             </div>
           `;
         }).join('')}
       </div>
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       ${teams.map(team => `
         <div class="bg-white p-4 rounded-lg shadow-md border-2 border-gray-200">
-          <div class="flex justify-between items-center mb-3">
+          <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 mb-3">
             <h3 class="text-lg font-bold text-gray-800">팀 ${team.id}</h3>
             ${team.averageRecord || showStudentGender ? `<span class="text-sm text-gray-600">${team.averageRecord ? `평균: ${team.averageRecord.toFixed(1)}` : ''}${team.averageRecord && showStudentGender ? ' | ' : ''}${showStudentGender ? (() => {
               const { male, female } = getStudentTeamGenderCounts(team);
@@ -1604,7 +1633,7 @@ function renderFinalTeams(allStudentsAssigned) {
           <p class="text-yellow-800 font-medium">아직 배정되지 않은 학생이 있습니다. 현재까지의 팀 구성을 확인할 수 있습니다.</p>
         </div>
       `}
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         ${teams.map(team => `
           <div class="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
             <h4 class="text-lg font-bold text-blue-800 mb-3 text-center">팀 ${team.id} (${team.members.length}명)</h4>
@@ -1635,14 +1664,33 @@ function renderFinalTeams(allStudentsAssigned) {
 }
 
 function attachStudentEventListeners(unassigned) {
-  document.querySelectorAll('.student-chart-area').forEach((el) => {
+  document.querySelectorAll('.student-chart-area, .student-card-actions').forEach((el) => {
     el.addEventListener('click', (e) => e.stopPropagation());
   });
 
+  document.querySelectorAll('.student-card-team-select').forEach((select) => {
+    select.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const teamId = Number(e.target.value);
+      const index = Number(e.target.dataset.studentIndex);
+      if (!teamId) {
+        const student = anonymizedStudents[index];
+        const currentTeamId = student ? getStudentAssignedTeamId(student.id) : null;
+        if (currentTeamId) {
+          teams = removeStudentFromTeam(teams, student.id, currentTeamId);
+          renderStudentView();
+        }
+        return;
+      }
+      assignStudentToTeamFromCard(index, teamId);
+    });
+  });
+
   document.querySelectorAll('.student-card').forEach(card => {
-    if (!card.classList.contains('opacity-60')) {
+    const index = Number(card.dataset.index);
+    const isAssigned = getStudentAssignedTeamId(anonymizedStudents[index]?.id) !== null;
+    if (!isAssigned) {
       card.addEventListener('click', (e) => {
-        const index = Number(e.target.closest('.student-card').dataset.index);
         selectedStudentIndex = index;
         renderStudentView();
       });
